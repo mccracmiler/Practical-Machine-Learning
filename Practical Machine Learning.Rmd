@@ -1,0 +1,235 @@
+##Course Project: Practical Machine Learning: May-2016
+####Synopsis 
+
+==============================================================================================================
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of 
+data about personal activity relatively inexpensively. These type of devices are part of the quantified self 
+movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to 
+find patterns in their behavior. The goal is to use data from accelerometers on the belt, forearm, arm, and 
+dumbell of 6 participants and predict the manner in which they did the exercise. Participants were asked to 
+perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the 
+website: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).  
+Author: B. McCracken
+==============================================================================================================
+
+####Executive Summary
+
+=============================================================================================================
+
+Basic exploratory analysis of the data sets gave rise to the need to clean the data to eliminate 
+surpuferlous data to allow for model building with higher degree of accuracy.  Six models were tested on 
+training, test and validation subsets of the training data to insure accuracy of the predictions made from the 
+test cases provided. 7 fold cross validation was used on all models to improve the accuracy of each model. A 
+Random Forest model performed best for prediction with a 99.74% accuracy rate and 99.67% Kappa. This compared to
+a 92.49% accuracy and 90.50% kappa for a Support Vector Machine model. Applying the Random Forest model to test 
+and validation sets generated the same results providing a high level of confidence for the use of this model 
+to predict the activity for the test cases.      
+==============================================================================================================
+
+####Downloading Data, Loading Required Packages and Data Cleaning
+
+=============================================================================================================
+
+Initial attempts to work with an uncleaned file overloaded the environment.  Initial data analysis yielded 
+numerous blank fields as well as NA and DIV/0 in the data. To streamline the data, the first step is to 
+convert all strange data ("NA"/""/"DIV/0_) data to NA. To further stream line the data for prediction, 
+variables that are classification oriented, ie...name, date, time stamp. etc are removed. The final two 
+steps involve identifying variables with little influence as the data is near zero or where there are an 
+abundance of missing values. Citation for the data used in this study is included at the end of the report.
+==============================================================================================================
+
+```{r Prepare Environment, echo=TRUE, message=F, warning=F}
+
+library(caret); library(randomForest); library(arm); library(abind) 
+library(rpart); library(rpart.plot); library(knitr); library(bst) 
+library(plyr); library(kernlab); library(MASS); library(caTools); 
+
+#The code and links to download the data for the project are included here.  This project assumes the data 
+#has been downloaded and is in the working directory. Code follows as comments:
+#library(downloader)
+#trainfileurl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+#download(trainfileurl, dest="./trainingdata.csv") 
+#testfileurl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+#download(testfileurl, dest="./testdata.csv") 
+
+trainfileurl <- "./trainingdata.csv"
+testfileurl  <- "./testdata.csv"
+trainingdata <- read.csv(trainfileurl, header = TRUE, na.strings=c("NA","#DIV/0!","")) 
+testingdata <- read.csv(testfileurl, header = TRUE,na.strings=c("NA","#DIV/0!",""))   
+dim1 <- dim(trainingdata)
+
+trainingdata <- trainingdata[, -(1:6)]
+dim2 <- dim(trainingdata)
+
+nzero <- nearZeroVar(trainingdata, saveMetrics = TRUE)
+trainingdata <- trainingdata[, !nzero$nzv]
+dim3 <- dim(trainingdata)
+
+removecolumns <- sapply(colnames(trainingdata), function(x) if(sum(is.na(trainingdata[, x]))
+           > 0.50*nrow(trainingdata)){return(TRUE)}else{return(FALSE)})
+trainingdata <- trainingdata[, !removecolumns]
+dim4 <-dim(trainingdata)
+
+rowlabels <- c("Raw", "Classification Removed", "Near Zero Removed", "Missing Values Removed")
+columnlabels  <- c("Records", "Variables")
+cleandata <- data.frame(rbind(dim1, dim2, dim3, dim4))
+rownames(cleandata) <- rowlabels
+colnames(cleandata) <- columnlabels
+knitr::kable(cleandata, caption = "Data cleaning steps reduces variables from 160 to 54")
+```
+
+==============================================================================================================
+
+The next step partitions the training data into a training, test and validation set with 60% in the training set, 
+20% in the test set and 20% in the validation set  
+==============================================================================================================
+
+```{r Training Test and Validation Data Set Creation, echo=TRUE, message=F, warning=F}
+inBuild <- createDataPartition(y=trainingdata$classe,
+                              p=0.80, list=FALSE)
+validation <- trainingdata[-inBuild,]; buildData <- trainingdata[inBuild,]
+
+inTrain <- createDataPartition(y=buildData$classe,
+                              p=0.75, list=FALSE)
+training <- buildData[inTrain,]; testing <- buildData[-inTrain,]
+
+trainingpercent <- nrow(training)/nrow(trainingdata)
+testingpercent <- nrow(testing)/nrow(trainingdata) 
+validationpercent <- nrow(validation)/nrow(trainingdata)
+records <- c(nrow(training), nrow(testing), nrow(validation))
+slices <- c(trainingpercent, testingpercent, validationpercent)
+lbls <- c("Training", "Test", "Validation")
+rowlabels <- c("Records", "Percent of Total") 
+pct <- round(slices/sum(slices)*100)
+traintestvalid <- data.frame(rbind(records,pct))
+colnames(traintestvalid) <- lbls
+rownames(traintestvalid) <- rowlabels
+kable(traintestvalid, caption = "Training data split into training, test and validation data sets on a 60%/20%/20% ratio")
+```  
+
+####Model Building
+
+==============================================================================================================
+
+The next step in the process is creating a variety of models to determine the ones with the best fit. 
+To avoid overfitting of the models and reduce out of sample errors, train control parameters are established to 
+perform 7-fold cross validation on all the modeling techniques. Then six models are developed: Random Forest, 
+Support Vector Machine-Radial, Linear Discriminate Analysis, Boosted Linear Model,  Boosted Tree, and a 
+Bayes Generalized Linear Model.  Several other models were evaluated that did not produce any higher levels 
+of accuracy.
+==============================================================================================================
+
+```{r Model Building, echo=TRUE, message=F, warning=F}
+
+traincp <- trainControl(method = "cv", number = 7, verboseIter=FALSE , preProcOptions="pca", allowParallel=TRUE)
+set.seed(1000) 
+randomfor  <- train(classe ~ ., data = training, method = "rf", trControl= traincp)
+svmradial  <- train(classe ~ ., data = training, method = "svmRadial", trControl= traincp)
+ldamod <- train(classe ~ ., data = training, method = "lda", trControl= traincp)
+boosttree  <- train(classe ~ ., data = training, method = "bstTree", trControl= traincp)
+bayesglm <- train(classe ~ ., data = training, method = "bayesglm", trControl= traincp)
+bstlm <- train(classe ~ ., data = training, method = "BstLm", trControl= traincp)
+
+#Accuracy comparision
+#This function converts factors to numeric
+as.numeric.factor <- function(x) {as.numeric(levels(x))[x]}
+
+Models <- c("Random Forest", "SVM (radial)","Linear DA","Boosted Tree ","Bayes GLM","Boosted LM")
+
+Accuracy <- c(max(randomfor$results$Accuracy),
+        max(svmradial$results$Accuracy),
+        max(ldamod$results$Accuracy),
+        max(boosttree$results$Accuracy),
+        max(bayesglm$results$Accuracy),
+        max(bstlm$results$Accuracy))
+       
+Kappa <- c(max(randomfor$results$Kappa),
+        max(svmradial$results$Kappa),
+        max(ldamod$results$Kappa),
+        max(boosttree$results$Kappa),
+        max(bayesglm$results$Kappa),
+        max(bstlm$results$Kappa))    
+   
+performance <- data.frame(cbind(Models,Accuracy,Kappa))
+performance$Accuracy <- as.numeric.factor(performance$Accuracy)
+performance$Kappa <- as.numeric.factor(performance$Kappa)
+performance$Accuracy <- performance$Accuracy*100
+performance$Kappa <- performance$Kappa*100
+lbls <- c("Model", "Accuracy %", "Kappa %")
+colnames(performance) <- lbls
+kable(performance, digits=2, caption = "Accuracy of Models")
+```
+
+####Model Analysis
+
+==============================================================================================================
+
+As noted in the table above, only the Random Forest and SVM models produce relatively accurate correlations 
+from the data. To further evaluate these models, predictions were made from the test and validation data based 
+on the Random Forest and SVM models.  
+==============================================================================================================
+
+```{r Model Analysis, echo=TRUE, message=F, warning=F}
+
+svmpredt <- predict(svmradial, testing[,-54])
+testsvmpredttable <- table(pred = svmpredt, true = testing[,54])
+Test_SVM <-confusionMatrix(testing$classe, svmpredt)$overall['Accuracy']
+OOS_ERR_SVMT <- 1-confusionMatrix(testing$classe, svmpredt)$overall['Accuracy']
+
+predRFt <- predict(randomfor,testing[,-54])
+testrfpredttable <- table(pred = predRFt, true = testing[,54])
+Test_RandomForest <- confusionMatrix(testing$classe, predRFt)$overall['Accuracy']
+OOS_ERR_RFT <- 1-confusionMatrix(testing$classe, predRFt)$overall['Accuracy']
+
+svmpredv <- predict(svmradial, validation[,-54])
+testsvmpredvtable <- table(pred = svmpredv, true = validation[,54])
+Validation_SVM <-confusionMatrix(validation$classe, svmpredv)$overall['Accuracy']
+OOS_ERR_SVMV <- 1-confusionMatrix(validation$classe, svmpredv)$overall['Accuracy']
+
+predRFv <- predict(randomfor,validation[,-54])
+testrfpredvtable <- table(pred = predRFv, true = validation[,54])
+Validation_RandomForest <- confusionMatrix(validation$classe, predRFv)$overall['Accuracy']
+OOS_ERR_RFV <- 1-confusionMatrix(validation$classe, predRFv)$overall['Accuracy']
+
+Predicted_Accuracy <- as.data.frame(rbind(Test_RandomForest,Test_SVM,Validation_RandomForest,Validation_SVM))
+Predicted_OOSE <- as.data.frame(rbind(OOS_ERR_RFT,OOS_ERR_SVMT,OOS_ERR_RFV,OOS_ERR_SVMV))
+Predicted_OOSE$Accuracy <- Predicted_OOSE$Accuracy*100
+colnames(Predicted_OOSE) <- c("Out of Sample Error %")
+Predicted_Accuracy$Accuracy <- Predicted_Accuracy$Accuracy*100
+Accuracy_lbl <- "Accuracy %"
+colnames(Predicted_Accuracy) <- Accuracy_lbl
+Predicted_Stats <- cbind(Predicted_Accuracy, Predicted_OOSE)
+rownms <- c("Random Forest (Test)", "SVM (Test)", "Random Forest (Validation)", "SVM (Validation)")
+rownames(Predicted_Stats) <- rownms
+kable(Predicted_Stats, digits=2, caption = "Accuracy of Predictions from Models")
+```
+
+####Application of model to test cases
+
+==============================================================================================================
+
+The last part of this project is to apply the optimal model to predict the test cases for the quiz. The "test data"
+contains 20 records.
+==============================================================================================================
+
+```{r Apply to Test Cases, echo=TRUE, message=F, warning=F}
+predRFtestdata <- predict(randomfor,testingdata[,-160])
+Prediction_Table <- as.data.frame(as.character(predRFtestdata))
+rows <- rownames(Prediction_Table)
+Prediction_Table <- cbind(rows,Prediction_Table)
+lbls <- c("Test Case #", "Predicted Activity")
+colnames(Prediction_Table) <- lbls
+kable(Prediction_Table, caption= "Prediction of Test Case Activities" )
+```
+
+####Citation for data used in project
+
+===============================================================================================================
+
+Data for this project come from this source: http://groupware.les.inf.puc-rio.br/har
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting 
+Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13). 
+Stuttgart, Germany: ACM SIGCHI, 2013.
+================================================================================================================
